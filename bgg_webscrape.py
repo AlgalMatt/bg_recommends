@@ -3,28 +3,36 @@ import requests
 import math
 import pandas as pd
 import numpy as np
+import time
 
-import cProfile
+# Create a session
+session = requests.Session()
+
+# Create an adapter with connection pool settings
+adapter = requests.adapters.HTTPAdapter(pool_connections=200, pool_maxsize=1)
+
+# Mount the adapter to the session
+session.mount('http://', adapter)
+session.mount('https://', adapter)
+
 
 def read_xml_from_url(url):
-    """Makes a get request to the given url if the address is good (status code == 200) 
-    Args:
-        url (str): URL of xml data
-    Returns:
-        bytes: content of the get request in bytes
-    """    
     try:
-        response = requests.get(url)
+        response = session.get(url)
         if response.status_code == 200:
             return response.content
+        elif response.status_code == 429:
+            print(f"Received 429 status code. Retrying in 5 seconds...")
+            time.sleep(10)
+            return read_xml_from_url(url)  # Retry the request
         else:
             print(f"Error: Unable to fetch data from {url}. Status code: {response.status_code}")
             return None
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         print(f"Error: {e}")
         return None
-    
-    
+
+
 
 def parse_xml(xml_data):
     """parses the xml data into an Element Tree
@@ -43,47 +51,64 @@ def parse_xml(xml_data):
         return None
 
 
-
-
-
-def game_reviews_df(root_element, title, year_pub):
+def game_reviews_dict(root_element):
     comments = root_element.find('.//item/comments')
-
-    dict_list = [{'title': title, 'year_pub': year_pub, 'game_id': id, 'username': comment.get('username'), 
-                  'rating': comment.get('rating')}
+    dict_list = [{'username': comment.get('username'), 'rating': comment.get('rating')}
                  for comment in comments.findall('comment')]
-
     return dict_list
+
+
+
+
+
+
 
 id = 1
 page = 1
 base_url = "https://boardgamegeek.com//xmlapi2/thing?id={}&ratingcomments=1&page={}&pagesize=100"
-big_dict_list = []
-dict_list=[np.nan]
+review_df_list=[]
+game_dict_list=[]
 
-while len(dict_list)>0:
-    format_url = base_url.format(id, page)
-    xml_data = read_xml_from_url(format_url)
 
-    if xml_data is None:
-        break
+for id in range(1,10):
+    page=1
+    big_dict_list = []
+    dict_list=[np.nan]
+    while len(dict_list)>0:
+        format_url = base_url.format(id, page)
+        xml_data = read_xml_from_url(format_url)
 
-    root_element = parse_xml(xml_data)
+        if xml_data is None:
+            break
 
-    if root_element is None:
-        break
+        root_element = parse_xml(xml_data)
 
-    if page == 1:
-        title = next(name_element.attrib['value'] for name_element in root_element.findall('.//item/name') if name_element.attrib['type'] == 'primary')
-        year_pub = int(root_element.find('.//item/yearpublished').attrib['value'])
+        if root_element is None:
+            break
 
-    dict_list = game_reviews_df(root_element, title, year_pub)
-    big_dict_list.extend(dict_list)
+        if page == 1:
+            title = next(name_element.attrib['value'] for name_element in root_element.findall('.//item/name') if name_element.attrib['type'] == 'primary')
+            year_pub = int(root_element.find('.//item/yearpublished').attrib['value'])
+            game_dict={'title':title, 'year_pub':year_pub, 'game_id':id}
 
-    print(page)
-    page += 1
+        
+        dict_list = game_reviews_dict(root_element)
+        big_dict_list.extend(dict_list)
 
-game_df = pd.DataFrame(big_dict_list)
+        print(page)
+        page += 1
 
+    review_df = pd.DataFrame(big_dict_list)
+    review_df['rating']=review_df['rating'].astype(float)
+    review_df['rating']=review_df['rating'].round()
+    review_df['rating']=review_df['rating'].astype(int)
+
+    game_dict['num_of_reviews']=len(review_df)
+
+    review_df_list.append(review_df)
+    game_dict_list.append(game_dict)
+
+
+game_df=pd.DataFrame(game_dict_list)
 
 
